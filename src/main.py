@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from transformers import pipeline
 from functools import lru_cache
@@ -26,9 +27,18 @@ COLLECTION_NAME = "chamados_semantic_search"
 
 app = FastAPI()
 
+# === CORS Middleware ===
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3001"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 summarizer = pipeline("summarization", model=MODEL_SUMMARIZER)
 encoder = SentenceTransformer(MODEL_EMBEDDINGS)
-qdrant_client = QdrantClient(":memory:")  # para testes locais, depois muda para o endereço do seu Qdrant
+qdrant_client = QdrantClient(":memory:")  # para testes locais
 
 # Inicialização do modelo de palavras-chave
 kw_model = KeyBERT(model="paraphrase-multilingual-MiniLM-L12-v2")
@@ -46,9 +56,6 @@ def gerar_resumo(texto: str) -> str:
     return resultado[0]['summary_text']
 
 def extrair_tag(texto: str) -> str:
-    """
-    Extrai a palavra-chave principal do texto.
-    """
     try:
         if texto.startswith('[') and texto.endswith(']'):
             lista = ast.literal_eval(texto)
@@ -70,32 +77,19 @@ def extrair_tag(texto: str) -> str:
         return keywords[0][0]
     return ""
 
-import pandas as pd
-
 def calcular_tempo_resposta(df_linha) -> str:
-    """
-    Função para calcular tempo de resposta em horas (se aplicável).
-    Se a data de abertura ou fechamento for nula, retorna "Chamado ainda não finalizado".
-    """
     try:
-        # Obter as datas de abertura e fechamento
         data_inicio = pd.to_datetime(df_linha.get("Data de abertura"))
         data_resposta = pd.to_datetime(df_linha.get("Data de fechamento"))
-        
-        # Verificar se ambas as datas estão disponíveis
+
         if pd.notna(data_inicio) and pd.notna(data_resposta):
-            # Calcular a diferença em horas
             tempo_resposta = (data_resposta - data_inicio).total_seconds() / 3600
-            
             if tempo_resposta < 0:
                 return "Chamado ainda não finalizado"
-            
             return tempo_resposta
         else:
-            # Retornar mensagem específica se alguma data estiver ausente
             return "Chamado ainda não finalizado"
     except Exception as e:
-        # Tratar possíveis erros e exibir mensagem de erro
         print(f"Erro ao calcular tempo de resposta: {e}")
         return None
 
@@ -116,13 +110,10 @@ def indexar_textos(df: pd.DataFrame):
         resposta = str(df.iloc[i]["Solução - Solução"]) if "Solução - Solução" in df.columns else None
         categoria = str(df.iloc[i].get("categoria", ""))
         data = str(df.iloc[i].get("data", ""))
-        
-        # CHAMAR AQUI O extrair_tag()
+
         assunto = extrair_tag(texto)
-        
-        # calcular tempo_resposta_horas se quiser também
-        tempo_resposta = calcular_tempo_resposta(df.iloc[i])  # supondo que você criou essa função
-        
+        tempo_resposta = calcular_tempo_resposta(df.iloc[i])
+
         ponto = PointStruct(
             id=i,
             vector=embeddings[i],
@@ -193,20 +184,13 @@ async def indexar_arquivo(id: str):
 
         data = response.json()
 
-        # Verifique o formato de 'data' para depuração
-        print("Data recebida:", data)  # Para depuração
-
-        # Se 'data' for um dicionário, verifique se os valores são iteráveis
         if isinstance(data, dict):
-            # Verifique se os valores são iteráveis (listas, tuplas, etc.)
             for key, value in data.items():
                 if not isinstance(value, (list, tuple)):
-                    raise HTTPException(status_code=400, detail=f"Valor de '{key}' não é iterável. Esperado lista ou tupla.")
-            
-            # Se tudo estiver certo, converta o dicionário de listas para uma lista de dicionários
+                    raise HTTPException(status_code=400, detail=f"Valor de '{key}' não é iterável.")
+
             data = [dict(zip(data, t)) for t in zip(*data.values())]
-        
-        # Agora podemos criar o DataFrame
+
         df = pd.DataFrame(data)
 
         if "Descrição_tokens_filtered" not in df.columns:
@@ -217,15 +201,12 @@ async def indexar_arquivo(id: str):
         return {"message": f"{len(df)} interações indexadas com sucesso!"}
 
     except requests.exceptions.RequestException as e:
-        # Exceção para erros nas requisições HTTP
         raise HTTPException(status_code=500, detail=f"Erro ao fazer a requisição HTTP: {str(e)}")
-    
+
     except ValueError as e:
-        # Exceção para erros relacionados à conversão de dados JSON
         raise HTTPException(status_code=400, detail=f"Erro ao processar o JSON ou criar o DataFrame: {str(e)}")
 
     except Exception as e:
-        # Captura qualquer outro tipo de exceção
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
 
 @app.get("/busca-semantica")
