@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+numpy
+transformers
+sentence-transformers
+qdrant-client
+cachetools
+python-multipart
+keybert
