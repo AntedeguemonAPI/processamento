@@ -109,7 +109,11 @@ def indexar_textos(df: pd.DataFrame):
         texto = textos[i]
         resposta = str(df.iloc[i]["Solução - Solução"]) if "Solução - Solução" in df.columns else None
         categoria = str(df.iloc[i].get("categoria", ""))
+        data_abertura = str(df.iloc[i].get("Data de abertura", ""))
+        data_fechamento = str(df.iloc[i].get("Data de fechamento", ""))
+        id_chamado = str(df.iloc[i].get("ID_chamado", ""))
         data = str(df.iloc[i].get("data", ""))
+
 
         assunto = extrair_tag(texto)
         tempo_resposta = calcular_tempo_resposta(df.iloc[i])
@@ -120,8 +124,11 @@ def indexar_textos(df: pd.DataFrame):
             payload={
                 "descricao": texto,
                 "resposta_sugerida": resposta,
+                "id_chamado": id_chamado,
                 "categoria": categoria,
                 "data": data,
+                "data_abertura": data_abertura,
+                "data_fechamento": data_fechamento,
                 "tag_assunto": assunto,
                 "tempo_resposta_horas": tempo_resposta
             }
@@ -154,6 +161,10 @@ def buscar_similares(consulta: str, filtros=None, top_k=5):
             "descricao": " ".join(ponto.payload.get("descricao", "").replace("[", "").replace("]", "").replace("'", "").split()).strip(),
             "resposta_sugerida": ponto.payload.get("resposta_sugerida"),
             "tempo_resposta_horas": ponto.payload.get("tempo_resposta_horas"),
+            "id_chamado": ponto.payload.get("id_chamado"),
+            "categoria": ponto.payload.get("categoria"),
+            "data_abertura": ponto.payload.get("data_abertura"),
+            "data_fechamento": ponto.payload.get("data_fechamento"),
             "score": ponto.score
         }
         for ponto in resultados
@@ -176,7 +187,7 @@ async def sumarizar_texto(entrada: TextoEntrada):
 @app.post("/indexar/{id}")
 async def indexar_arquivo(id: str):
     try:
-        url = f"http://banco-de-dados:5003/texto_limpo/id_geral/{id}"
+        url = f"http://localhost:5003/texto_limpo/id_geral/{id}"
         response = requests.get(url, timeout=100)
 
         if response.status_code != 200:
