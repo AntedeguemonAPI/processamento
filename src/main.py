@@ -12,6 +12,7 @@ import ast
 import os
 import json
 from keybert import KeyBERT
+from collections import Counter
 import requests
 
 # ========== Configurações ==========
@@ -38,9 +39,9 @@ app.add_middleware(
 
 summarizer = pipeline("summarization", model=MODEL_SUMMARIZER)
 encoder = SentenceTransformer(MODEL_EMBEDDINGS)
-qdrant_client = QdrantClient(":memory:")  # para testes locais
+qdrant_client = QdrantClient(":memory:")
 
-# Inicialização do modelo de palavras-chave
+
 kw_model = KeyBERT(model="paraphrase-multilingual-MiniLM-L12-v2")
 
 # ========== Modelos Pydantic ==========
@@ -56,26 +57,46 @@ def gerar_resumo(texto: str) -> str:
     return resultado[0]['summary_text']
 
 def extrair_tag(texto: str) -> str:
+    texto_original_para_log = texto 
     try:
-        if texto.startswith('[') and texto.endswith(']'):
+        if isinstance(texto, str) and texto.startswith('[') and texto.endswith(']'):
             lista = ast.literal_eval(texto)
-            texto = ' '.join(lista)
-    except Exception as e:
-        print(f"Erro ao interpretar texto como lista: {e}")
+            texto_convertido = ' '.join(map(str, lista))
+            print(f"Texto original (string de lista): {texto_original_para_log}")
+            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
+            texto = texto_convertido 
+        elif isinstance(texto, list): 
+            texto_convertido = ' '.join(map(str, texto))
+            print(f"Texto original (lista): {texto_original_para_log}")
+            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
+            texto = texto_convertido
 
-    if not texto.strip():
+    except Exception as e:
+        print(f"Erro ao interpretar texto '{texto_original_para_log}' como lista ou ao processá-lo: {e}")
+        return "" 
+
+    if not isinstance(texto, str) or not texto.strip():
+        print(f"Texto para KeyBERT está vazio, não é string ou só contém espaços após o pré-processamento. Texto original: {texto_original_para_log}")
         return ""
 
     keywords = kw_model.extract_keywords(
         texto,
         keyphrase_ngram_range=(1, 2),
-        stop_words='portuguese',
-        top_n=1
+        stop_words=None,  # Desabilita a remoção de stop words
+        use_mmr=False,  
+        top_n=3
     )
+    # ---------------------------
+
+    # Adicionar um log para ver o que KeyBERT retorna
+    print(f"KeyBERT retornou para '{texto}': {keywords}")
 
     if keywords:
         return keywords[0][0]
-    return ""
+    else:
+
+        print(f"Nenhuma keyword encontrada por KeyBERT para o texto: '{texto}'")
+        return ""
 
 def calcular_tempo_resposta(df_linha) -> str:
     try:
@@ -106,23 +127,25 @@ def indexar_textos(df: pd.DataFrame):
 
     pontos = []
     for i in range(len(textos)):
-        texto = textos[i]
+        descricao = str(df.iloc[i]["Descrição"])
         resposta = str(df.iloc[i]["Solução - Solução"]) if "Solução - Solução" in df.columns else None
         categoria = str(df.iloc[i].get("categoria", ""))
+
         data_abertura = str(df.iloc[i].get("Data de abertura", ""))
         data_fechamento = str(df.iloc[i].get("Data de fechamento", ""))
         id_chamado = str(df.iloc[i].get("ID_chamado", ""))
         data = str(df.iloc[i].get("data", ""))
 
-
-        assunto = extrair_tag(texto)
+        print("Texto: ", descricao)
+        assunto = extrair_tag(descricao)
+        print("Assunto extraído:", assunto)
         tempo_resposta = calcular_tempo_resposta(df.iloc[i])
 
         ponto = PointStruct(
             id=i,
             vector=embeddings[i],
             payload={
-                "descricao": texto,
+                "descricao": descricao,
                 "resposta_sugerida": resposta,
                 "id_chamado": id_chamado,
                 "categoria": categoria,
@@ -164,6 +187,7 @@ def buscar_similares(consulta: str, filtros=None, top_k=5):
             "id_chamado": ponto.payload.get("id_chamado"),
             "categoria": ponto.payload.get("categoria"),
             "data_abertura": ponto.payload.get("data_abertura"),
+            "tag_assunto": ponto.payload.get("tag_assunto"),
             "data_fechamento": ponto.payload.get("data_fechamento"),
             "score": ponto.score
         }
@@ -238,3 +262,55 @@ async def busca_semantica(
 
     resultados = buscar_similares(query, filtros if filtros else None, top_k=top_k)
     return {"resultados": resultados}
+
+@app.get("/top-topics")
+async def get_top_topics(
+    top_n: int = Query(10, ge=1, description="Número de tópicos mais frequentes a retornar (ex: 10, 25, 50, 100)")
+):
+    """
+    Retorna os tópicos (tags de assunto) mais frequentes na coleção.
+    """
+    all_tags = []
+    offset = None  # Para o scroll da Qdrant
+
+    try:
+        while True:
+
+            points, next_offset = qdrant_client.scroll(
+                collection_name=COLLECTION_NAME,
+                limit=250,  
+                offset=offset,
+                with_payload=["tag_assunto"],
+                with_vectors=False
+            )
+
+            for point in points:
+                tag = point.payload.get("tag_assunto")
+                if tag and isinstance(tag, str) and tag.strip():
+                    all_tags.append(tag)
+
+            if not next_offset: 
+                break
+            offset = next_offset
+
+        if not all_tags:
+            return {"message": "Nenhum tópico encontrado ou a coleção está vazia.", "top_topics": []}
+
+        tag_counts = Counter(all_tags)
+        most_common_tags = tag_counts.most_common(top_n)
+
+        formatted_top_topics = [
+            {"topic": tag, "count": count} for tag, count in most_common_tags
+        ]
+
+        return {
+            "total_documents_with_tags": len(all_tags),
+            "total_unique_topics": len(tag_counts),
+            "requested_top_n": top_n,
+            "top_topics": formatted_top_topics
+        }
+
+    except Exception as e:
+
+        print(f"Erro ao buscar tópicos do Qdrant: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao processar os tópicos: {str(e)}")
