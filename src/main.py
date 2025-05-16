@@ -211,7 +211,7 @@ async def sumarizar_texto(entrada: TextoEntrada):
 @app.post("/indexar/{id}")
 async def indexar_arquivo(id: str):
     try:
-        url = f"http://localhost:5003/texto_limpo/id_geral/{id}"
+        url = f"http://banco-de-dados:5003/texto_limpo/id_geral/{id}"
         response = requests.get(url, timeout=100)
 
         if response.status_code != 200:
