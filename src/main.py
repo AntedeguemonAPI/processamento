@@ -14,8 +14,19 @@ import json
 from keybert import KeyBERT
 from collections import Counter
 import requests
+from fastapi.responses import JSONResponse
 
 # ========== Configurações ==========
+caminho_csv = "./mnt/data/Chamados_Processed.csv"
+try:
+    df = pd.read_csv(caminho_csv, sep=";", encoding="utf-8")
+    print("CSV lido com sucesso!")
+    print("Colunas:", df.columns)
+    print(df.head())
+    print("Colunas disponíveis:", df.columns.tolist())
+
+except Exception as e:
+    print(f"Erro ao ler o CSV: {e}")
 
 UPLOAD_DIR = "./uploads/"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -50,6 +61,63 @@ class TextoEntrada(BaseModel):
     texto: str
 
 # ========== Funções Auxiliares ==========
+
+@app.get("/dashboard")
+def gerar_dashboard():
+    try:
+        # Caminho do CSV
+        # Lê o arquivo CSV processado
+        caminho_csv = "./mnt/data/Chamados_Processed.csv"
+        df = pd.read_csv(caminho_csv, sep=";", encoding="utf-8")
+
+        # Indexa os textos para Qdrant
+        indexar_textos(df)
+
+        # Dados base
+        total_tickets = len(df)
+
+        # Contar chamados fechados/abertos
+        status_closed = df["Data de fechamento"].notna().sum()
+        status_open = df["Data de fechamento"].isna().sum()
+
+        # Calcular tempo médio de resolução (em horas)
+        df["tempo_resposta"] = df.apply(calcular_tempo_resposta, axis=1)
+        tempos_validos = df["tempo_resposta"][df["tempo_resposta"].apply(lambda x: isinstance(x, (int, float)))]
+        average_resolution_time = (
+            f"{np.mean(tempos_validos):.2f} horas" if not tempos_validos.empty else "N/A"
+        )
+
+        # SLA: vamos supor SLA = 72h
+        sla_limit = 72
+        sla_met = tempos_validos[tempos_validos <= sla_limit].count()
+        sla_not_met = tempos_validos[tempos_validos > sla_limit].count()
+
+        # Erros ortográficos simulados (pode melhorar depois com verificação real)
+        spelling_errors = df["Descrição"].apply(
+            lambda x: 1 if isinstance(x, str) and "???" in x else 0
+        ).sum()
+
+        # Tópicos com KeyBERT
+        top_tags = df["Descrição"].astype(str).apply(extrair_tag)
+        contador = Counter(top_tags)
+        top_topics = [tag for tag, _ in contador.most_common(5)]
+        topic_frequencies = [count for _, count in contador.most_common(5)]
+
+        return {
+                "averageResolutionTime": str(average_resolution_time),  # Já é string, só manter
+                "slaMet": int(sla_met),
+                "slaNotMet": int(sla_not_met),
+                "statusOpen": int(status_open),
+                "statusClosed": int(status_closed),
+                "spellingErrors": int(spelling_errors),
+                "totalTickets": int(total_tickets),
+                "topTopics": top_topics,
+                "topicFrequencies": [int(c) for c in topic_frequencies]  # <- aqui também
+                
+            }
+        
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"erro": str(e)})
 
 @lru_cache(maxsize=1000)
 def gerar_resumo(texto: str) -> str:
