@@ -14,7 +14,6 @@ import json
 from keybert import KeyBERT
 from collections import Counter
 import requests
-
 # ========== Configurações ==========
 
 UPLOAD_DIR = "./uploads/"
@@ -57,44 +56,35 @@ def gerar_resumo(texto: str) -> str:
     return resultado[0]['summary_text']
 
 def extrair_tag(texto: str) -> str:
-    texto_original_para_log = texto 
+    texto_original_para_log = texto
     try:
-        if isinstance(texto, str) and texto.startswith('[') and texto.endswith(']'):
-            lista = ast.literal_eval(texto)
+        lista = ast.literal_eval(texto)
+        if isinstance(lista, list):
             texto_convertido = ' '.join(map(str, lista))
-            print(f"Texto original (string de lista): {texto_original_para_log}")
-            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
-            texto = texto_convertido 
-        elif isinstance(texto, list): 
-            texto_convertido = ' '.join(map(str, texto))
-            print(f"Texto original (lista): {texto_original_para_log}")
-            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
             texto = texto_convertido
-
+        else:
+            raise ValueError("O conteúdo da string não é uma lista.")
     except Exception as e:
-        print(f"Erro ao interpretar texto '{texto_original_para_log}' como lista ou ao processá-lo: {e}")
-        return "" 
+        print(f"Erro ao interpretar texto '{texto_original_para_log}' como lista: {e}")
+        return ""
 
     if not isinstance(texto, str) or not texto.strip():
-        print(f"Texto para KeyBERT está vazio, não é string ou só contém espaços após o pré-processamento. Texto original: {texto_original_para_log}")
+        print(f"Texto para KeyBERT está vazio, não é string ou só contém espaços. Texto original: {texto_original_para_log}")
         return ""
 
     keywords = kw_model.extract_keywords(
         texto,
         keyphrase_ngram_range=(1, 2),
-        stop_words=None,  # Desabilita a remoção de stop words
-        use_mmr=False,  
+        stop_words=None,
+        use_mmr=False,
         top_n=3
     )
-    # ---------------------------
 
-    # Adicionar um log para ver o que KeyBERT retorna
     print(f"KeyBERT retornou para '{texto}': {keywords}")
 
     if keywords:
         return keywords[0][0]
     else:
-
         print(f"Nenhuma keyword encontrada por KeyBERT para o texto: '{texto}'")
         return ""
 
@@ -130,6 +120,7 @@ def indexar_textos(df: pd.DataFrame):
         descricao = str(df.iloc[i]["Descrição"])
         resposta = str(df.iloc[i]["Solução - Solução"]) if "Solução - Solução" in df.columns else None
         categoria = str(df.iloc[i].get("categoria", ""))
+        descricao_tokens_filtered = str(df.iloc[i].get("Descrição_tokens_filtered", ""))
 
         data_abertura = str(df.iloc[i].get("Data de abertura", ""))
         data_fechamento = str(df.iloc[i].get("Data de fechamento", ""))
@@ -137,7 +128,7 @@ def indexar_textos(df: pd.DataFrame):
         data = str(df.iloc[i].get("data", ""))
 
         print("Texto: ", descricao)
-        assunto = extrair_tag(descricao)
+        assunto = extrair_tag(descricao_tokens_filtered)
         print("Assunto extraído:", assunto)
         tempo_resposta = calcular_tempo_resposta(df.iloc[i])
 
