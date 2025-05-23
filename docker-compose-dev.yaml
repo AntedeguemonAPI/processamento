@@ -1,10 +1,8 @@
-
 services:
-
   processamento:
     image: briscese/processamento:latest
     build:
-      context: ../processamento
+      context: ../processamento # Caminho para a pasta do serviço processamento
       dockerfile: Dockerfile
     ports:
       - "5004:5004"
@@ -14,7 +12,8 @@ services:
     depends_on:
       - controller-cadastro-autenticacao
     volumes:
-      - ../processamento/src:/app/src
+    - ../processamento/src:/app/src # Se habilitar, certifique-se que o WORKDIR e CMD no Dockerfile ainda funcionam
+    - ../processamento/mnt/data:/app/mnt/data
 
   postgres:
     container_name: postgres-container
@@ -22,7 +21,8 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_postgres=test_postgres
+      # Havia um erro de digitação aqui: POSTGRES_postgres, deveria ser POSTGRES_DB
+      - POSTGRES_DB=test_postgres 
     ports:
       - "5432:5432"
     volumes:
@@ -48,7 +48,7 @@ services:
   pre-processamento:
     image: briscese/pre-processamento:latest
     build:
-      context: ../pre-processamento
+      context: ../pre-processamento # Caminho para a pasta do serviço pre-processamento
       dockerfile: Dockerfile
     ports:
       - "5001:5001"
@@ -59,12 +59,14 @@ services:
       - controller-cadastro-autenticacao
     volumes:
       - ../pre-processamento/src:/app/src
+      - ../processamento/mnt/data:/app/mnt/data
 
   banco-de-dados:
     image: briscese/banco-de-dados:latest
     build:
-      context: .
-      dockerfile: Dockerfile
+      # CORRIGIDO: O contexto deve apontar para a pasta do serviço banco-de-dados
+      context: ../banco-de-dados 
+      dockerfile: Dockerfile # Assegure-se que o Dockerfile está em ../banco-de-dados/Dockerfile
     ports:
       - "5003:5003"
     networks:
@@ -73,7 +75,13 @@ services:
     depends_on:
       - controller-cadastro-autenticacao
     env_file:
-      - .env
+      # CORRIGIDO (Exemplo): Se o .env está na pasta do serviço banco-de-dados
+      - ../banco-de-dados/.env 
+      # Se o .env estiver na raiz do projeto API (C:\6 Semestre Fatec\API\.env), use:
+      # - ../.env 
+      # Se estiver na mesma pasta que o docker-compose-dev.yaml (C:\6 Semestre Fatec\API\processamento\.env)
+      # e for para o serviço banco-de-dados (o que seria incomum), então seria apenas:
+      # - .env
 
   controller-cadastro-autenticacao:
     image: briscese/nc-controller-cadastro-autenticacao:latest
@@ -88,7 +96,8 @@ services:
 
 volumes:
   postgres-data:
-  front-data:
+  # front-data: # Removido se não estiver em uso por nenhum serviço listado
+  # volume-chamados-processados: # Removido se não estiver em uso por nenhum serviço listado
 
 networks:
   rede_microsservicos:

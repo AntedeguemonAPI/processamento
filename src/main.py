@@ -17,7 +17,7 @@ import requests
 from fastapi.responses import JSONResponse
 
 # ========== Configurações ==========
-caminho_csv = "./mnt/data/Chamados_Processed.csv"
+caminho_csv = "../mnt/data/Chamados_Processed.csv"
 try:
     df = pd.read_csv(caminho_csv, sep=";", encoding="utf-8")
     print("CSV lido com sucesso!")
@@ -65,9 +65,10 @@ class TextoEntrada(BaseModel):
 @app.get("/dashboard")
 def gerar_dashboard():
     try:
+        print("Entrou na funcao dashboard")
         # Caminho do CSV
         # Lê o arquivo CSV processado
-        caminho_csv = "./mnt/data/Chamados_Processed.csv"
+        caminho_csv = "../mnt/data/Chamados_Processed.csv"
         df = pd.read_csv(caminho_csv, sep=";", encoding="utf-8")
 
         # Indexa os textos para Qdrant
@@ -92,10 +93,14 @@ def gerar_dashboard():
         sla_met = tempos_validos[tempos_validos <= sla_limit].count()
         sla_not_met = tempos_validos[tempos_validos > sla_limit].count()
 
-        # Erros ortográficos simulados (pode melhorar depois com verificação real)
-        spelling_errors = df["Descrição"].apply(
-            lambda x: 1 if isinstance(x, str) and "???" in x else 0
-        ).sum()
+        # Pega erros ortográficos direto do JSON do pré-processamento
+        try:
+            with open("../mnt/data/resultado_pipeline.json", "r", encoding="utf-8") as f:
+                resultado_pipeline = json.load(f)
+                spelling_errors = resultado_pipeline.get("total_spelling_errors", 0)
+        except Exception as e:
+            print(f"[WARN] Não foi possível carregar resultadoPipeline.json: {e}")
+            spelling_errors = 0
 
         # Tópicos com KeyBERT
         top_tags = df["Descrição"].astype(str).apply(extrair_tag)
@@ -103,7 +108,7 @@ def gerar_dashboard():
         top_topics = [tag for tag, _ in contador.most_common(5)]
         topic_frequencies = [count for _, count in contador.most_common(5)]
 
-        return {
+        resultado_dashboard = {
                 "averageResolutionTime": str(average_resolution_time),  # Já é string, só manter
                 "slaMet": int(sla_met),
                 "slaNotMet": int(sla_not_met),
@@ -115,6 +120,9 @@ def gerar_dashboard():
                 "topicFrequencies": [int(c) for c in topic_frequencies]  # <- aqui também
                 
             }
+        print("\n Resultado final do dashboard:")
+        print(json.dumps(resultado_dashboard, indent=4, ensure_ascii=False))
+        return resultado_dashboard
         
     except Exception as e:
         return JSONResponse(status_code=500, content={"erro": str(e)})
