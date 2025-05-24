@@ -403,3 +403,22 @@ async def get_top_topics(
 
         print(f"Erro ao buscar tópicos do Qdrant: {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao processar os tópicos: {str(e)}")
+    
+@app.get("/dashboard_dados")
+async def obter_dashboard_com_maior_id_geral():
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            response = await client.get("http://localhost:5003/processamento/")
+            lista_processamento = response.json()
+
+            if not lista_processamento:
+                return JSONResponse(status_code=404, content={"erro": "Nenhum dado encontrado"})
+
+            # Obter o item com maior id_geral
+            item_maior_id_geral = max(lista_processamento, key=lambda x: x.get("id_geral", 0))
+
+            return JSONResponse(status_code=200, content=item_maior_id_geral)
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"erro": str(e)})
+    
