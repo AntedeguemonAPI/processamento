@@ -133,38 +133,48 @@ def gerar_resumo(texto: str) -> str:
     return resultado[0]['summary_text']
 
 def extrair_tag(texto: str) -> str:
-    texto_original_para_log = texto
+    texto_original_para_log = texto 
     try:
-        lista = ast.literal_eval(texto)
-        if isinstance(lista, list):
+        if isinstance(texto, str) and texto.startswith('[') and texto.endswith(']'):
+            lista = ast.literal_eval(texto)
             texto_convertido = ' '.join(map(str, lista))
+            print(f"Texto original (string de lista): {texto_original_para_log}")
+            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
+            texto = texto_convertido 
+        elif isinstance(texto, list): 
+            texto_convertido = ' '.join(map(str, texto))
+            print(f"Texto original (lista): {texto_original_para_log}")
+            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
             texto = texto_convertido
-        else:
-            raise ValueError("O conteúdo da string não é uma lista.")
+
     except Exception as e:
-        print(f"Erro ao interpretar texto '{texto_original_para_log}' como lista: {e}")
-        return ""
+        print(f"Erro ao interpretar texto '{texto_original_para_log}' como lista ou ao processá-lo: {e}")
+        return "" 
 
     if not isinstance(texto, str) or not texto.strip():
-        print(f"Texto para KeyBERT está vazio, não é string ou só contém espaços. Texto original: {texto_original_para_log}")
+        print(f"Texto para KeyBERT está vazio, não é string ou só contém espaços após o pré-processamento. Texto original: {texto_original_para_log}")
         return ""
 
     keywords = kw_model.extract_keywords(
         texto,
         keyphrase_ngram_range=(1, 2),
-        stop_words=None,
-        use_mmr=False,
+        stop_words=None,  # Desabilita a remoção de stop words
+        use_mmr=False,  
         top_n=3
     )
+    # ---------------------------
 
+    # Adicionar um log para ver o que KeyBERT retorna
     print(f"KeyBERT retornou para '{texto}': {keywords}")
 
     if keywords:
         return keywords[0][0]
     else:
+
         print(f"Nenhuma keyword encontrada por KeyBERT para o texto: '{texto}'")
         return ""
-
+    
+    
 def calcular_tempo_resposta(df_linha) -> str:
     try:
         data_inicio = pd.to_datetime(df_linha.get("Data de abertura"))
@@ -279,7 +289,7 @@ async def sumarizar_texto(entrada: TextoEntrada):
 @app.post("/indexar/{id}")
 async def indexar_arquivo(id: str):
     try:
-        url = f"http://banco-de-dados:5003/texto_limpo/id_geral/{id}"
+        url = f"http://localhost:5003/texto_limpo/id_geral/{id}"
         response = requests.get(url, timeout=100)
 
         if response.status_code != 200:
