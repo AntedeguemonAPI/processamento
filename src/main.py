@@ -15,18 +15,10 @@ from keybert import KeyBERT
 from collections import Counter
 import requests
 from fastapi.responses import JSONResponse
+from pathlib import Path
+import httpx
 
 # ========== Configurações ==========
-caminho_csv = "../mnt/data/Chamados_Processed.csv"
-try:
-    df = pd.read_csv(caminho_csv, sep=";", encoding="utf-8")
-    print("CSV lido com sucesso!")
-    print("Colunas:", df.columns)
-    print(df.head())
-    print("Colunas disponíveis:", df.columns.tolist())
-
-except Exception as e:
-    print(f"Erro ao ler o CSV: {e}")
 
 UPLOAD_DIR = "./uploads/"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -54,7 +46,7 @@ qdrant_client = QdrantClient(":memory:")
 
 
 kw_model = KeyBERT(model="paraphrase-multilingual-MiniLM-L12-v2")
-
+ID_SERVICE_URL = "http://localhost:5003"
 # ========== Modelos Pydantic ==========
 
 class TextoEntrada(BaseModel):
@@ -63,43 +55,35 @@ class TextoEntrada(BaseModel):
 # ========== Funções Auxiliares ==========
 
 @app.get("/dashboard")
-def gerar_dashboard():
+async def gerar_dashboard():
     try:
         print("Entrou na funcao dashboard")
-        # Caminho do CSV
-        # Lê o arquivo CSV processado
-        caminho_csv = "../mnt/data/Chamados_Processed.csv"
+
+        # Caminhos relativos
+        base_dir = Path(__file__).resolve().parents[2]
+        caminho_csv = base_dir / "pre-processamento" / "src" / "Chamados_Processed.csv"
+        caminho_json = base_dir / "pre-processamento" / "src" / "resultado_pipeline.json"
+
         df = pd.read_csv(caminho_csv, sep=";", encoding="utf-8")
 
-        # Indexa os textos para Qdrant
-        indexar_textos(df)
-
-        # Dados base
         total_tickets = len(df)
-
-        # Contar chamados fechados/abertos
         status_closed = df["Data de fechamento"].notna().sum()
         status_open = df["Data de fechamento"].isna().sum()
 
-        # Calcular tempo médio de resolução (em horas)
         df["tempo_resposta"] = df.apply(calcular_tempo_resposta, axis=1)
         tempos_validos = df["tempo_resposta"][df["tempo_resposta"].apply(lambda x: isinstance(x, (int, float)))]
-        average_resolution_time = (
-            f"{np.mean(tempos_validos):.2f} horas" if not tempos_validos.empty else "N/A"
-        )
+        average_resolution_time = f"{np.mean(tempos_validos):.2f} horas" if not tempos_validos.empty else "N/A"
 
-        # SLA: vamos supor SLA = 72h
         sla_limit = 72
         sla_met = tempos_validos[tempos_validos <= sla_limit].count()
         sla_not_met = tempos_validos[tempos_validos > sla_limit].count()
 
-        # Pega erros ortográficos direto do JSON do pré-processamento
         try:
-            with open("../mnt/data/resultado_pipeline.json", "r", encoding="utf-8") as f:
+            with open(caminho_json, "r", encoding="utf-8") as f:
                 resultado_pipeline = json.load(f)
                 spelling_errors = resultado_pipeline.get("total_spelling_errors", 0)
         except Exception as e:
-            print(f"[WARN] Não foi possível carregar resultadoPipeline.json: {e}")
+            print(f"[WARN] Não foi possível carregar resultado_pipeline.json: {e}")
             spelling_errors = 0
 
         # Tópicos com KeyBERT
@@ -108,8 +92,21 @@ def gerar_dashboard():
         top_topics = [tag for tag, _ in contador.most_common(5)]
         topic_frequencies = [count for _, count in contador.most_common(5)]
 
-        resultado_dashboard = {
-                "averageResolutionTime": str(average_resolution_time),  # Já é string, só manter
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+            # Requisição GET para buscar os dados existentes
+            response = await client.get("http://localhost:5003/processamento/")
+            lista_processamento = response.json()
+
+            if not lista_processamento:
+                return JSONResponse(status_code=404, content={"erro": "Nenhum id_geral encontrado para atualizar"})
+
+            # Encontrar o item com maior id_geral
+            item_maior_id_geral = max(lista_processamento, key=lambda x: x.get("id_geral", 0))
+            mongo_id = item_maior_id_geral["id"]  # id do MongoDB
+            id_geral = item_maior_id_geral["id_geral"]  # apenas para exibir
+
+            resultado_dashboard = {
+                "averageResolutionTime": average_resolution_time,
                 "slaMet": int(sla_met),
                 "slaNotMet": int(sla_not_met),
                 "statusOpen": int(status_open),
@@ -117,15 +114,30 @@ def gerar_dashboard():
                 "spellingErrors": int(spelling_errors),
                 "totalTickets": int(total_tickets),
                 "topTopics": top_topics,
-                "topicFrequencies": [int(c) for c in topic_frequencies]  # <- aqui também
-                
+                "topicFrequencies": topic_frequencies,
+                "processamento_concluido": 1
             }
-        print("\n Resultado final do dashboard:")
-        print(json.dumps(resultado_dashboard, indent=4, ensure_ascii=False))
-        return resultado_dashboard
-        
+
+            print("\n Resultado final do dashboard:")
+            print(json.dumps(resultado_dashboard, indent=4, ensure_ascii=False))
+
+            # Atualiza o documento usando o _id correto
+            update_url = f"http://localhost:5003/processamento/{mongo_id}"
+            update_response = await client.put(update_url, json=resultado_dashboard)
+
+            if update_response.status_code == 200:
+                print(f"[INFO] Atualização realizada com sucesso para id_geral = {id_geral}")
+            else:
+                print(f"[ERROR] Falha ao atualizar: {update_response.status_code} - {update_response.text}")
+
+        return {
+            "mensagem": f"Dashboard gerado e atualizado para id_geral {id_geral}",
+            "dados_enviados": resultado_dashboard
+        }
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"erro": str(e)})
+
 
 @lru_cache(maxsize=1000)
 def gerar_resumo(texto: str) -> str:
@@ -133,35 +145,44 @@ def gerar_resumo(texto: str) -> str:
     return resultado[0]['summary_text']
 
 def extrair_tag(texto: str) -> str:
-    texto_original_para_log = texto
+    texto_original_para_log = texto 
     try:
-        lista = ast.literal_eval(texto)
-        if isinstance(lista, list):
+        if isinstance(texto, str) and texto.startswith('[') and texto.endswith(']'):
+            lista = ast.literal_eval(texto)
             texto_convertido = ' '.join(map(str, lista))
+            print(f"Texto original (string de lista): {texto_original_para_log}")
+            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
+            texto = texto_convertido 
+        elif isinstance(texto, list): 
+            texto_convertido = ' '.join(map(str, texto))
+            print(f"Texto original (lista): {texto_original_para_log}")
+            print(f"Texto convertido para KeyBERT: '{texto_convertido}'")
             texto = texto_convertido
-        else:
-            raise ValueError("O conteúdo da string não é uma lista.")
+
     except Exception as e:
-        print(f"Erro ao interpretar texto '{texto_original_para_log}' como lista: {e}")
-        return ""
+        print(f"Erro ao interpretar texto '{texto_original_para_log}' como lista ou ao processá-lo: {e}")
+        return "" 
 
     if not isinstance(texto, str) or not texto.strip():
-        print(f"Texto para KeyBERT está vazio, não é string ou só contém espaços. Texto original: {texto_original_para_log}")
+        print(f"Texto para KeyBERT está vazio, não é string ou só contém espaços após o pré-processamento. Texto original: {texto_original_para_log}")
         return ""
 
     keywords = kw_model.extract_keywords(
         texto,
         keyphrase_ngram_range=(1, 2),
-        stop_words=None,
-        use_mmr=False,
+        stop_words=None,  # Desabilita a remoção de stop words
+        use_mmr=False,  
         top_n=3
     )
+    # ---------------------------
 
+    # Adicionar um log para ver o que KeyBERT retorna
     print(f"KeyBERT retornou para '{texto}': {keywords}")
 
     if keywords:
         return keywords[0][0]
     else:
+
         print(f"Nenhuma keyword encontrada por KeyBERT para o texto: '{texto}'")
         return ""
 
@@ -279,7 +300,7 @@ async def sumarizar_texto(entrada: TextoEntrada):
 @app.post("/indexar/{id}")
 async def indexar_arquivo(id: str):
     try:
-        url = f"http://banco-de-dados:5003/texto_limpo/id_geral/{id}"
+        url = f"http://localhost:5003/texto_limpo/id_geral/{id}"
         response = requests.get(url, timeout=100)
 
         if response.status_code != 200:
