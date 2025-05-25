@@ -17,6 +17,7 @@ import requests
 from fastapi.responses import JSONResponse
 from pathlib import Path
 import httpx
+from io import StringIO
 
 # ========== Configurações ==========
 
@@ -46,7 +47,7 @@ qdrant_client = QdrantClient(":memory:")
 
 
 kw_model = KeyBERT(model="paraphrase-multilingual-MiniLM-L12-v2")
-ID_SERVICE_URL = "http://localhost:5003"
+ID_SERVICE_URL = "http://banco-de-dados:5003"
 # ========== Modelos Pydantic ==========
 
 class TextoEntrada(BaseModel):
@@ -59,12 +60,24 @@ async def gerar_dashboard():
     try:
         print("Entrou na funcao dashboard")
 
-        # Caminhos relativos
-        base_dir = Path(__file__).resolve().parents[2]
-        caminho_csv = base_dir / "pre-processamento" / "src" / "Chamados_Processed.csv"
-        caminho_json = base_dir / "pre-processamento" / "src" / "resultado_pipeline.json"
+        url_json = "http://pre-processamento:5001/files/resultado_pipeline"
+        url_csv = "http://pre-processamento:5001/files/resultado_chamados_processed"
 
-        df = pd.read_csv(caminho_csv, sep=";", encoding="utf-8")
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+            # Pega o JSON
+            response_json = await client.get(url_json)
+            if response_json.status_code != 200:
+                return JSONResponse(status_code=500, content={"erro": "Falha ao buscar resultado_pipeline.json"})
+            resultado_pipeline = response_json.json()
+            spelling_errors = resultado_pipeline.get("total_spelling_errors", 0)
+
+            # Pega o CSV
+            response_csv = await client.get(url_csv)
+            if response_csv.status_code != 200:
+                return JSONResponse(status_code=500, content={"erro": "Falha ao buscar Chamados_Processed.csv"})
+
+            csv_text = response_csv.text
+            df = pd.read_csv(StringIO(csv_text), sep=";", encoding="utf-8")
 
         total_tickets = len(df)
         status_closed = df["Data de fechamento"].notna().sum()
@@ -78,32 +91,23 @@ async def gerar_dashboard():
         sla_met = tempos_validos[tempos_validos <= sla_limit].count()
         sla_not_met = tempos_validos[tempos_validos > sla_limit].count()
 
-        try:
-            with open(caminho_json, "r", encoding="utf-8") as f:
-                resultado_pipeline = json.load(f)
-                spelling_errors = resultado_pipeline.get("total_spelling_errors", 0)
-        except Exception as e:
-            print(f"[WARN] Não foi possível carregar resultado_pipeline.json: {e}")
-            spelling_errors = 0
-
         # Tópicos com KeyBERT
         top_tags = df["Descrição"].astype(str).apply(extrair_tag)
         contador = Counter(top_tags)
         top_topics = [tag for tag, _ in contador.most_common(5)]
         topic_frequencies = [count for _, count in contador.most_common(5)]
 
+        # Busca dados para atualizar o MongoDB
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-            # Requisição GET para buscar os dados existentes
-            response = await client.get("http://localhost:5003/processamento/")
+            response = await client.get("http://banco-de-dados:5003/processamento/")
             lista_processamento = response.json()
 
             if not lista_processamento:
                 return JSONResponse(status_code=404, content={"erro": "Nenhum id_geral encontrado para atualizar"})
 
-            # Encontrar o item com maior id_geral
             item_maior_id_geral = max(lista_processamento, key=lambda x: x.get("id_geral", 0))
-            mongo_id = item_maior_id_geral["id"]  # id do MongoDB
-            id_geral = item_maior_id_geral["id_geral"]  # apenas para exibir
+            mongo_id = item_maior_id_geral["id"]
+            id_geral = item_maior_id_geral["id_geral"]
 
             resultado_dashboard = {
                 "averageResolutionTime": average_resolution_time,
@@ -121,8 +125,7 @@ async def gerar_dashboard():
             print("\n Resultado final do dashboard:")
             print(json.dumps(resultado_dashboard, indent=4, ensure_ascii=False))
 
-            # Atualiza o documento usando o _id correto
-            update_url = f"http://localhost:5003/processamento/{mongo_id}"
+            update_url = f"http://banco-de-dados:5003/processamento/{mongo_id}"
             update_response = await client.put(update_url, json=resultado_dashboard)
 
             if update_response.status_code == 200:
@@ -300,7 +303,7 @@ async def sumarizar_texto(entrada: TextoEntrada):
 @app.post("/indexar/{id}")
 async def indexar_arquivo(id: str):
     try:
-        url = f"http://localhost:5003/texto_limpo/id_geral/{id}"
+        url = f"http://banco-de-dados:5003/texto_limpo/id_geral/{id}"
         response = requests.get(url, timeout=100)
 
         if response.status_code != 200:
@@ -408,7 +411,7 @@ async def get_top_topics(
 async def obter_dashboard_com_maior_id_geral():
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-            response = await client.get("http://localhost:5003/processamento/")
+            response = await client.get("http://banco-de-dados:5003/processamento/")
             lista_processamento = response.json()
 
             if not lista_processamento:

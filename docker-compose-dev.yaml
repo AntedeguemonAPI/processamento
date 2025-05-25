@@ -12,8 +12,7 @@ services:
     depends_on:
       - controller-cadastro-autenticacao
     volumes:
-    - ../processamento/src:/app/src # Se habilitar, certifique-se que o WORKDIR e CMD no Dockerfile ainda funcionam
-    - ../processamento/mnt/data:/app/mnt/data
+    - ../shared_data:/app/src
 
   postgres:
     container_name: postgres-container
@@ -58,8 +57,8 @@ services:
     depends_on:
       - controller-cadastro-autenticacao
     volumes:
-      - ../pre-processamento/src:/app/src
-      - ../processamento/mnt/data:/app/mnt/data
+      - ../shared_data:/app/src
+      
 
   banco-de-dados:
     image: briscese/banco-de-dados:latest
